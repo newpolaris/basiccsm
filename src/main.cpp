@@ -19,62 +19,72 @@
 #include <GLType/ProgramShader.h>
 #include <GLType/GraphicsFramebuffer.h>
 
-#include <GLType/OGLTexture.h>
-#include <GLType/OGLCoreTexture.h>
-#include <GLType/OGLCoreFramebuffer.h>
-
+#include <BufferManager.h>
 #include <GraphicsTypes.h>
-#include <SkyBox.h>
 #include <PhaseFunctions.h>
 #include <Mesh.h>
+#include <ModelAssImp.h>
+#include <LightingTechnique.h>
 
 #include <fstream>
 #include <memory>
 #include <vector>
 #include <algorithm>
 #include <GameCore.h>
-#include "Atmosphere.h"
+#include <tools/string.h>
+#include <GraphicsContext.h>
+#include <GLType/GraphicsTexture.h>
 
-enum ProfilerType { ProfilerTypeRender = 0 };
+enum ProfilerType { kProfilerTypeRender = 0, kProfilerTypeUpdate };
+
+struct OrthographicProjection
+{
+    float l, r, b, t, n, f;
+};
 
 namespace 
 {
     float s_CpuTick = 0.f;
     float s_GpuTick = 0.f;
+    const int s_NumMeshes = 5;
+    float near_plane = 1.0f, far_plane = 200.0f;
+    glm::mat4 m_MatMeshModel[s_NumMeshes];
+    glm::vec3 lightPosition = glm::vec3(0.0f, 0.0f, 0.0f);
 }
-
-enum EnumSkyModel { kNishita = 0, kTimeOfDay, kTimeOfNight, };
 
 struct SceneSettings
 {
-    bool bProfile = true;
+    float debugType = 0.f;
+    bool bDebugDepth = false;
     bool bUiChanged = false;
     bool bResized = false;
     bool bUpdated = true;
-	bool bChapman = true;
+    float depthIndex = 0.f;
+	float m_exposure = 0.f;
     float angle = 76.f;
-    float altitude = 1.f;
     float fov = 45.f;
-
-    EnumSkyModel kModel = kTimeOfNight;
-
-    // Nishita Sky model
-    bool bCPU = false;
-    FloatSetting sunTurbidityParams {"Sun Turbidity", glm::vec3(-7.f, -9.f, -4.f)};
-
-    // Time of Day
-    FloatSetting cloudSpeedParams = {"Cloud Speed", glm::vec3(0.05, 0.0, 1.0)};
-    FloatSetting cloudDensityParams = {"Cloud Density", glm::vec3(400, 0.0, 1600.0)};
-    // Sun Radius, How much size that simulates the sun size
-    FloatSetting sunRaidusParams {"Sun Radius", glm::vec3(5000, 100000, 100)};
-    // Sun light power, 10.0 is normal
-    FloatSetting sunRadianceParams {"Sun Radiance", glm::vec3(10, 1.0, 20.0)}; 	
-    FloatSetting sunTurbidity2Params {"Sun Turbidity", glm::vec3(100.f, 1e-5f, 1000)};
-
-    // Time of night
-    FloatSetting moonRadianceParams {"Moon Radiance", glm::vec3(5.0, 1.0, 10.0)}; 	
-    FloatSetting moonTurbidityParams {"Moon Turbidity", glm::vec3(200.f, 1e-5f, 500)};
+    float Slice1 = 25.f;
+    float Slice2 = 90.f;
+    glm::vec3 lightDirection = glm::vec3(1.f, -1.f, 0.f);
+    glm::vec3 position = glm::vec3(0.7f, 9.5f, -1.0f);
 };
+
+
+glm::mat4 OrthoProjectTransform(float l, float r, float t, float b, float n, float f)
+{
+    float X = 2.f / (r - l);
+    float Y = 2.f / (t - b);
+    float Z = 2.f / (f - n);
+    float Tx = -(r + l)/(r - l);
+    float Ty = -(t + b)/(t - b);
+    float Tz = -(f + n)/(f - n);
+
+    return glm::mat4(
+        X,   0.f,  0.f,  Tx,
+        0.f,   Y,  0.f,  Ty,
+        0.f, 0.f,    Z,  Tz,
+        0.f, 0.f,  0.f, 1.f);
+}
 
 class LightScattering final : public gamecore::IGameApp
 {
@@ -97,34 +107,53 @@ public:
 
 private:
 
+    void CalcOrthoProjections();
+    void ShadowMapPass(GraphicsContext& gfxContext);
+    void RenderDebugDepth(GraphicsContext& gfxContext);
+    void RenderPass(GraphicsContext& gfxContext);
+    void TonemapPass(GraphicsContext& gfxContext);
+    void RenderScene(const ProgramShader& shader);
+    void RenderScene(LightingTechnique& technique);
+
+    glm::vec3 GetSunDirection() const;
+    glm::mat4 GetLightViewMatrix() const;
+    glm::mat4 GetLightSpaceMatrix(uint32_t i) const;
+
+    static const uint32_t m_NumCascades = 3;
+    float m_CascadeEnd[m_NumCascades+1];
+    OrthographicProjection m_ShadowOrthoProject[m_NumCascades]; 
+
     std::vector<glm::vec2> m_Samples;
-    SphereMesh m_Sphere;
     SceneSettings m_Settings;
 	TCamera m_Camera;
     SimpleTimer m_Timer;
+    ModelAssImp m_Dragon;
+    DirectionalLight m_DirectionalLight;
+    CubeMesh m_Cube;
+    SphereMesh m_Sphere;
+    SphereMesh m_SphereMini;
+    PlaneMesh m_Ground;
     FullscreenTriangleMesh m_ScreenTraingle;
+    ProgramShader m_LightShader;
     ProgramShader m_FlatShader;
-    ProgramShader m_NishitaSkyShader;
-    ProgramShader m_TimeOfDayShader;
-    ProgramShader m_TimeOfNightShader;
-    ProgramShader m_StarShader;
-    ProgramShader m_MoonShader;
-    ProgramShader m_BlitShader;
+    ProgramShader m_ShadowMapShader;
+    ProgramShader m_DebugDepthShader;
     ProgramShader m_PostProcessHDRShader;
-    GraphicsTexturePtr m_SkyColorTex;
-    GraphicsTexturePtr m_ScreenColorTex;
-	GraphicsTexturePtr m_NoiseMapSamp;
-	GraphicsTexturePtr m_MilkywaySamp;
-	GraphicsTexturePtr m_MoonMapSamp;
-    GraphicsFramebufferPtr m_ColorRenderTarget;
     GraphicsDevicePtr m_Device;
+    GraphicsTexturePtr m_TexWood;
 };
 
 CREATE_APPLICATION(LightScattering);
 
 LightScattering::LightScattering() noexcept :
-    m_Sphere(32, 1.0e2f)
+    m_Sphere(32, 1.0e2f),
+    m_SphereMini(48, 2.0f),
+    m_Ground(1000.f, 32.f, 10.f)
 {
+    m_DirectionalLight.AmbientIntensity = 0.5f;
+    m_DirectionalLight.DiffuseIntensity = 0.9f;
+    m_DirectionalLight.Color = glm::vec3(1.f, 1.f, 1.f);
+    m_DirectionalLight.Direction = glm::vec3(1.0f, -1.f, 0.0f);
 }
 
 LightScattering::~LightScattering() noexcept
@@ -134,9 +163,15 @@ LightScattering::~LightScattering() noexcept
 void LightScattering::startup() noexcept
 {
 	profiler::initialize();
+
     m_Timer.initialize();
 	m_Camera.setMoveCoefficient(0.35f);
-	m_Camera.setViewParams(glm::vec3(2.0f, 5.0f, 15.0f), glm::vec3(2.0f, 0.0f, 0.0f));
+    m_Camera.setViewParams(glm::vec3(8.f, 21.f, -23.f), glm::vec3(8.f, 21.f, -23.f) + glm::vec3(-0.7f, -0.44f, 0.9f));
+
+    glm::vec3 p = { -9.85913467, 25.9683094, -18.1401157 };
+    glm::vec3 c = {-9.82689571, 25.1048946, -17.6366520 };
+    glm::vec3 u = {0.0551749095, 0.504494607, 0.861650109};
+    m_Camera.setViewParams(p, c);
 
 	GraphicsDeviceDesc deviceDesc;
 #if __APPLE__
@@ -145,49 +180,35 @@ void LightScattering::startup() noexcept
 	deviceDesc.setDeviceType(GraphicsDeviceType::GraphicsDeviceTypeOpenGLCore);
 #endif
 	m_Device = createDevice(deviceDesc);
-	assert(m_Device);
 
-	m_FlatShader.setDevice(m_Device);
-	m_FlatShader.initialize();
-	m_FlatShader.addShader(GL_VERTEX_SHADER, "Flat.Vertex");
-	m_FlatShader.addShader(GL_FRAGMENT_SHADER, "Flat.Fragment");
-	m_FlatShader.link();
+    GraphicsTextureDesc woodDesc;
+    woodDesc.setFilename("resources/wood.png");
+    woodDesc.setWrapS(GL_REPEAT);
+    woodDesc.setWrapT(GL_REPEAT);
+    m_TexWood = m_Device->createTexture(woodDesc);
 
-	m_NishitaSkyShader.setDevice(m_Device);
-	m_NishitaSkyShader.initialize();
-	m_NishitaSkyShader.addShader(GL_VERTEX_SHADER, "Nishita.Vertex");
-	m_NishitaSkyShader.addShader(GL_FRAGMENT_SHADER, "Nishita.Fragment");
-	m_NishitaSkyShader.link();
+    m_ShadowMapShader.setDevice(m_Device);
+    m_ShadowMapShader.initialize();
+    m_ShadowMapShader.addShader(GL_VERTEX_SHADER, "ShadowMapVS.glsl");
+    m_ShadowMapShader.link();
 
-	m_TimeOfDayShader.setDevice(m_Device);
-	m_TimeOfDayShader.initialize();
-	m_TimeOfDayShader.addShader(GL_VERTEX_SHADER, "Time of day/Time of day.Vertex");
-	m_TimeOfDayShader.addShader(GL_FRAGMENT_SHADER, "Time of day/Time of day.Fragment");
-	m_TimeOfDayShader.link();
+    m_FlatShader.setDevice(m_Device);
+    m_FlatShader.initialize();
+    m_FlatShader.addShader(GL_VERTEX_SHADER, "Flat.Vertex");
+    m_FlatShader.addShader(GL_FRAGMENT_SHADER, "Flat.Fragment");
+    m_FlatShader.link();
 
-	m_TimeOfNightShader.setDevice(m_Device);
-	m_TimeOfNightShader.initialize();
-	m_TimeOfNightShader.addShader(GL_VERTEX_SHADER, "Time of night/Time of night.Vertex");
-	m_TimeOfNightShader.addShader(GL_FRAGMENT_SHADER, "Time of night/Time of night.Fragment");
-	m_TimeOfNightShader.link();
+    m_DebugDepthShader.setDevice(m_Device);
+    m_DebugDepthShader.initialize();
+    m_DebugDepthShader.addShader(GL_VERTEX_SHADER, "DebugDepth.Vertex");
+    m_DebugDepthShader.addShader(GL_FRAGMENT_SHADER, "DebugDepth.Fragment");
+    m_DebugDepthShader.link();
 
-	m_StarShader.setDevice(m_Device);
-	m_StarShader.initialize();
-	m_StarShader.addShader(GL_VERTEX_SHADER, "Time of night/Stars.Vertex");
-	m_StarShader.addShader(GL_FRAGMENT_SHADER, "Time of night/Stars.Fragment");
-	m_StarShader.link();
-
-	m_MoonShader.setDevice(m_Device);
-	m_MoonShader.initialize();
-	m_MoonShader.addShader(GL_VERTEX_SHADER, "Time of night/Moon.Vertex");
-	m_MoonShader.addShader(GL_FRAGMENT_SHADER, "Time of night/Moon.Fragment");
-	m_MoonShader.link();
-
-	m_BlitShader.setDevice(m_Device);
-	m_BlitShader.initialize();
-	m_BlitShader.addShader(GL_VERTEX_SHADER, "BlitTexture.Vertex");
-	m_BlitShader.addShader(GL_FRAGMENT_SHADER, "BlitTexture.Fragment");
-	m_BlitShader.link();
+    m_LightShader.setDevice(m_Device);
+    m_LightShader.initialize();
+    m_LightShader.addShader(GL_VERTEX_SHADER, "LightingVS.glsl");
+    m_LightShader.addShader(GL_FRAGMENT_SHADER, "LightingPS.glsl");
+    m_LightShader.link();
 
 	m_PostProcessHDRShader.setDevice(m_Device);
 	m_PostProcessHDRShader.initialize();
@@ -196,37 +217,27 @@ void LightScattering::startup() noexcept
 	m_PostProcessHDRShader.link();
 
     m_ScreenTraingle.create();
+    m_Cube.create();
     m_Sphere.create();
+    m_SphereMini.create();
+    m_Ground.create();
+    m_Dragon.create();
+    m_Dragon.loadFromFile("resources/dragon.obj");
 
-    GraphicsTextureDesc noise;
-    noise.setWrapS(GL_REPEAT);
-    noise.setWrapT(GL_REPEAT);
-    noise.setMinFilter(GL_LINEAR);
-    noise.setMagFilter(GL_LINEAR);
-    noise.setFilename("resources/Skybox/cloud.tga");
-    m_NoiseMapSamp = m_Device->createTexture(noise);
-
-    GraphicsTextureDesc milkyWay;
-    milkyWay.setWrapS(GL_REPEAT);
-    milkyWay.setWrapT(GL_REPEAT);
-    milkyWay.setMinFilter(GL_NEAREST);
-    milkyWay.setMagFilter(GL_NEAREST);
-    milkyWay.setFilename("resources/Skybox/milky way.jpg");
-    m_MilkywaySamp = m_Device->createTexture(milkyWay);
-
-    GraphicsTextureDesc moon;
-    moon.setWrapS(GL_REPEAT);
-    moon.setWrapT(GL_REPEAT);
-    moon.setMinFilter(GL_LINEAR);
-    moon.setMagFilter(GL_LINEAR);
-    moon.setFilename("resources/Skybox/moon.jpg");
-    m_MoonMapSamp = m_Device->createTexture(moon);
+    for (int i = 0; i < s_NumMeshes; i++) {
+        glm::mat4 model(1.f);
+        m_MatMeshModel[i] = glm::translate(model, glm::vec3(0.0f, 0.0f, 3.f + i * 30.f));
+    }
 }
 
 void LightScattering::closeup() noexcept
 {
+    m_Cube.destroy();
     m_Sphere.destroy();
+    m_SphereMini.destroy();
+    m_Ground.destroy();
     m_ScreenTraingle.destroy();
+    m_Dragon.destroy();
 	profiler::shutdown();
 }
 
@@ -248,23 +259,12 @@ void LightScattering::update() noexcept
         bResized = true;
     }
     m_Settings.bUpdated = (m_Settings.bUiChanged || bCameraUpdated || bResized);
-    if (m_Settings.bUpdated && m_Settings.bCPU)
-    {
-        float angle = glm::radians(m_Settings.angle);
-        std::vector<glm::vec4> image(width*height, glm::vec4(0.f));
-        glm::vec3 sunDir = glm::vec3(0.0f, glm::cos(angle), -glm::sin(angle));
+    lightPosition = m_Settings.position;
 
-        Atmosphere atmosphere(sunDir);
-        atmosphere.renderSkyDome(image, width, height);
-
-        GraphicsTextureDesc colorDesc;
-        colorDesc.setWidth(width);
-        colorDesc.setHeight(height);
-        colorDesc.setFormat(gli::FORMAT_RGBA32_SFLOAT_PACK32);
-        colorDesc.setStream((uint8_t*)image.data());
-        colorDesc.setStreamSize(width*height*sizeof(glm::vec4));
-        m_SkyColorTex = m_Device->createTexture(colorDesc);
-    }
+    m_CascadeEnd[0] = -near_plane;
+    m_CascadeEnd[1] = -m_Settings.Slice1;
+    m_CascadeEnd[2] = -m_Settings.Slice2;
+    m_CascadeEnd[3] = -far_plane;
 }
 
 void LightScattering::updateHUD() noexcept
@@ -286,44 +286,27 @@ void LightScattering::updateHUD() noexcept
         {
             ImGui::Text("CPU %s: %10.5f ms\n", "Main", s_CpuTick);
             ImGui::Text("GPU %s: %10.5f ms\n", "Main", s_GpuTick);
-            ImGui::Separator();
-
-            ImGui::Text("Sky Models:");
-            int kModel = m_Settings.kModel;
-            ImGui::RadioButton("Nishita", &kModel, 0);
-            ImGui::RadioButton("Time of Day", &kModel, 1);
-            ImGui::RadioButton("Time of Night", &kModel, 2);
-            m_Settings.kModel = EnumSkyModel(kModel);
         }
         ImGui::Separator();
         {
             bUpdated |= ImGui::SliderFloat("Sun Angle", &m_Settings.angle, 0.f, 120.f);
-            bUpdated |= m_Settings.sunRaidusParams.updateGUI();
-            bUpdated |= ImGui::SliderFloat("Altitude (km)", &m_Settings.altitude, 0.f, 100.f);
             bUpdated |= ImGui::SliderFloat("Fov", &m_Settings.fov, 15.f, 120.f);
-        }
-        ImGui::Separator();
-        if (m_Settings.kModel == kNishita)
-        {
-            bUpdated |= ImGui::Checkbox("Mode CPU", &m_Settings.bCPU);
-            bUpdated |= ImGui::Checkbox("Always redraw", &m_Settings.bProfile);
-            bUpdated |= ImGui::Checkbox("Use chapman approximation", &m_Settings.bChapman);
-            bUpdated |= m_Settings.sunRadianceParams.updateGUI();
-            bUpdated |= m_Settings.sunTurbidityParams.updateGUI();
-        }
-        if (m_Settings.kModel == kTimeOfDay)
-        {
-            bUpdated |= m_Settings.cloudSpeedParams.updateGUI();
-            bUpdated |= m_Settings.cloudDensityParams.updateGUI();
-            bUpdated |= m_Settings.sunRadianceParams.updateGUI();
-            bUpdated |= m_Settings.sunTurbidity2Params.updateGUI();
-        }
-        if (m_Settings.kModel == kTimeOfNight)
-        {
-            bUpdated |= m_Settings.moonRadianceParams.updateGUI();
-            bUpdated |= m_Settings.moonTurbidityParams.updateGUI();
+            ImGui::Separator();
+            bUpdated |= ImGui::SliderFloat("Debug Light type", &m_Settings.debugType, 0.f, 3.f);
+            ImGui::Separator();
+            bUpdated |= ImGui::Checkbox("Debug depth", &m_Settings.bDebugDepth);
+            bUpdated |= ImGui::SliderFloat("Debug depth index", &m_Settings.depthIndex, 0.f, 2.f);
+            ImGui::Separator();
+            bUpdated |= ImGui::SliderFloat("Near", &near_plane, -10.f, m_Settings.Slice1);
+            bUpdated |= ImGui::SliderFloat("Slice1", &m_Settings.Slice1, near_plane, m_Settings.Slice2);
+            bUpdated |= ImGui::SliderFloat("Slice2", &m_Settings.Slice2, m_Settings.Slice1, far_plane);
         }
     }
+    ImGui::Unindent();
+    ImGui::Separator();
+    ImGui::Text("Post processing:");
+    ImGui::Indent();
+    ImGui::SliderFloat("Exposure", &m_Settings.m_exposure, -4.0f, 4.0f);
     ImGui::Unindent();
     ImGui::End();
 
@@ -332,122 +315,193 @@ void LightScattering::updateHUD() noexcept
 
 void LightScattering::render() noexcept
 {
-    bool bUpdate = m_Settings.bProfile || m_Settings.bUpdated;
+    GraphicsContext context(GraphicsDeviceTypeOpenGLCore);
+    profiler::start(kProfilerTypeRender);
 
-    profiler::start(ProfilerTypeRender);
-    if (!m_Settings.bCPU && bUpdate)
+    CalcOrthoProjections();
+    ShadowMapPass(context);
+    if (m_Settings.bDebugDepth) RenderDebugDepth(context);
+    else RenderPass(context);
+    TonemapPass(context);
+
+    profiler::stop(kProfilerTypeRender);
+    profiler::tick(kProfilerTypeRender, s_CpuTick, s_GpuTick);
+}
+
+void LightScattering::CalcOrthoProjections()
+{
+    glm::mat4 viewInv = glm::inverse(m_Camera.getViewMatrix());
+    glm::mat4 lightView = GetLightViewMatrix();
+
+    float aspect = (float)Graphics::g_NativeWidth/Graphics::g_NativeHeight;
+    float halfFovY = glm::radians(m_Settings.fov / 2.f);
+    float tanHalfVerticalFOV = glm::tan(halfFovY);
+    float tanHalfHorizontalFOV = tanHalfVerticalFOV*aspect;
+
+    for (uint32_t i = 0; i < m_NumCascades; i++)
     {
-        // [Preetham99]
-        const glm::vec3 K = glm::vec3(0.686282f, 0.677739f, 0.663365f); // spectrum
-        const glm::vec3 lambda = glm::vec3(680e-9f, 550e-9f, 440e-9f);
+        float xn = m_CascadeEnd[i] * tanHalfHorizontalFOV;
+        float yn = m_CascadeEnd[i] * tanHalfVerticalFOV;
+        float xf = m_CascadeEnd[i+1] * tanHalfHorizontalFOV;
+        float yf = m_CascadeEnd[i+1] * tanHalfVerticalFOV;
 
-        auto& desc = m_ScreenColorTex->getGraphicsTextureDesc();
-        m_Device->setFramebuffer(m_ColorRenderTarget);
-        GLenum clearFlag = GL_DEPTH_BUFFER_BIT | GL_COLOR_BUFFER_BIT;
-        glViewport(0, 0, desc.getWidth(), desc.getHeight());
-        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-        glClearDepthf(1.0f);
-        glClear(clearFlag);
+        auto frustumCorners = {
+            // near face
+            glm::vec4( xn,  yn, m_CascadeEnd[i], 1.f),
+            glm::vec4(-xn,  yn, m_CascadeEnd[i], 1.f),
+            glm::vec4( xn, -yn, m_CascadeEnd[i], 1.f),
+            glm::vec4(-xn, -yn, m_CascadeEnd[i], 1.f),
 
-        // sky box
-        glDisable(GL_CULL_FACE);
-        glEnable(GL_DEPTH_TEST);
-        glDepthMask(GL_TRUE);
+            // far face
+            glm::vec4( xf,  yf, m_CascadeEnd[i+1], 1.f),
+            glm::vec4(-xf,  yf, m_CascadeEnd[i+1], 1.f),
+            glm::vec4( xf, -yf, m_CascadeEnd[i+1], 1.f),
+            glm::vec4(-xf, -yf, m_CascadeEnd[i+1], 1.f),
+        };
 
-        const float time = m_Timer.duration();
-        const float angle = glm::radians(m_Settings.angle);
-		glm::vec2 resolution(desc.getWidth(), desc.getHeight());
-        glm::vec3 sunDir = glm::vec3(0.0f, glm::cos(angle), -glm::sin(angle));
-        if (m_Settings.kModel == kNishita)
+        glm::vec3 minPoint = glm::vec3(std::numeric_limits<float>::max());
+        glm::vec3 maxPoint = glm::vec3(-std::numeric_limits<float>::max());
+
+        for (auto it : frustumCorners)
         {
-            float turbidity = glm::exp(m_Settings.sunTurbidityParams.value());
-            glm::vec3 mie = ComputeCoefficientMie(lambda, K, turbidity);
-            glm::vec3 rayleigh = ComputeCoefficientRayleigh(lambda);
+            // Transform the frustum coordinate from view to world space
+            glm::vec4 positionWS = viewInv * it;
+            // Transform the frustum coordinate from world to light space
+            glm::vec3 positionLS = glm::vec3(lightView * positionWS);
 
-            m_NishitaSkyShader.bind();
-            m_NishitaSkyShader.setUniform("uModelToProj", m_Camera.getViewProjMatrix());
-            m_NishitaSkyShader.setUniform("uChapman", m_Settings.bChapman);
-            m_NishitaSkyShader.setUniform("uEarthRadius", 6360e3f);
-            m_NishitaSkyShader.setUniform("uAtmosphereRadius", 6420e3f);
-            m_NishitaSkyShader.setUniform("uEarthCenter", glm::vec3(0.f));
-            m_NishitaSkyShader.setUniform("uSunDir", glm::normalize(sunDir));
-            m_NishitaSkyShader.setUniform("uAltitude", m_Settings.altitude*1e3f);
-            m_NishitaSkyShader.setUniform("uSunRadius", m_Settings.sunRaidusParams.value());
-            m_NishitaSkyShader.setUniform("uSunRadiance", m_Settings.sunRadianceParams.value());
-            m_NishitaSkyShader.setUniform("betaR0", rayleigh);
-            m_NishitaSkyShader.setUniform("betaM0", mie);
-            m_Sphere.draw();
+            minPoint = glm::min(minPoint, positionLS);
+            maxPoint = glm::max(maxPoint, positionLS);
         }
-        if (m_Settings.kModel == kTimeOfDay)
-        {
-            m_TimeOfDayShader.bind();
-            m_TimeOfDayShader.setUniform("uCameraPosition", m_Camera.getPosition());
-            m_TimeOfDayShader.setUniform("uModelToProj", m_Camera.getViewProjMatrix());
-            m_TimeOfDayShader.setUniform("uSunDir", glm::normalize(sunDir));
-            m_TimeOfDayShader.setUniform("uAltitude", m_Settings.altitude*1e3f);
-            m_TimeOfDayShader.setUniform("uCloudSpeed", m_Settings.cloudSpeedParams.value() * time);
-            m_TimeOfDayShader.setUniform("uCloudDensity", m_Settings.cloudDensityParams.value());
-            m_TimeOfDayShader.setUniform("uSunRadius", m_Settings.sunRaidusParams.value());
-			m_TimeOfDayShader.setUniform("uSunRadiance", m_Settings.sunRadianceParams.value());
-            m_TimeOfDayShader.setUniform("uTurbidity", m_Settings.sunTurbidity2Params.value());
-            m_TimeOfDayShader.bindTexture("uNoiseMapSamp", m_NoiseMapSamp, 0);
-            m_Sphere.draw();
-        }
-        if (m_Settings.kModel == kTimeOfNight)
-        {
-            m_StarShader.bind();
-            m_StarShader.setUniform("uTime", time);
-            m_StarShader.setUniform("uCameraPosition", m_Camera.getPosition());
-            m_StarShader.setUniform("uModelToProj", m_Camera.getViewProjMatrix());
-            m_StarShader.setUniform("uSunDir", glm::normalize(sunDir));
-            m_StarShader.bindTexture("uMilkyWayMapSamp", m_MilkywaySamp, 0);
-            m_Sphere.draw();
-
-            glDisable(GL_DEPTH_TEST);
-            glDepthMask(GL_FALSE);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-
-            m_MoonShader.bind();
-            m_MoonShader.setUniform("uTime", time);
-            m_MoonShader.setUniform("uCameraPosition", m_Camera.getPosition());
-            m_MoonShader.setUniform("uModelToProj", m_Camera.getViewProjMatrix());
-            m_MoonShader.setUniform("uSunDirection", -glm::normalize(sunDir));
-            m_MoonShader.setUniform("uMoonBrightness", m_Settings.moonRadianceParams.ratio());
-            m_MoonShader.bindTexture("uMoonMapSamp", m_MoonMapSamp, 0);
-            m_Sphere.draw();
-
-            glBlendFunc(GL_ONE, GL_SRC_ALPHA);
-            m_TimeOfNightShader.bind();
-            m_TimeOfNightShader.setUniform("uCameraPosition", m_Camera.getPosition());
-            m_TimeOfNightShader.setUniform("uModelToProj", m_Camera.getViewProjMatrix());
-            m_TimeOfNightShader.setUniform("uSunDir", glm::normalize(sunDir));
-            m_TimeOfNightShader.setUniform("uTurbidity", m_Settings.moonTurbidityParams.value());
-            m_Sphere.draw();
-
-            glDisable(GL_BLEND);
-            glEnable(GL_DEPTH_TEST);
-            glDepthMask(GL_TRUE);
-        }
-		glEnable(GL_CULL_FACE);
+        // glm::orth espect camera n, f which is > 0, so revert it
+        m_ShadowOrthoProject[i] = { minPoint.x, maxPoint.x, minPoint.y, maxPoint.y, -maxPoint.z, -minPoint.z };
     }
-    // Tone mapping
+}
+
+void LightScattering::ShadowMapPass(GraphicsContext& gfxContext)
+{
+    m_ShadowMapShader.bind();
+    // depth clamping so that the shadow maps keep from moving 
+    // through objects which causes shadows to disappear.
+    gfxContext.SetDepthClamp(true);
+    gfxContext.SetCullFace(kCullFront);
+    for (int i = 0; i < m_NumCascades; i++)
     {
-        GraphicsTexturePtr target = m_ScreenColorTex;
-        if (m_Settings.bCPU && m_SkyColorTex) 
-            target = m_SkyColorTex;
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glViewport(0, 0, getFrameWidth(), getFrameHeight());
-
-        glDisable(GL_DEPTH_TEST);
-        m_PostProcessHDRShader.bind();
-        m_PostProcessHDRShader.bindTexture("uTexSource", target, 0);
-        m_ScreenTraingle.draw();
-        glEnable(GL_DEPTH_TEST);
+        gfxContext.SetFramebuffer(Graphics::g_ShadowMapFramebuffer[i]);
+        gfxContext.SetViewport(0, 0, Graphics::g_ShadowMapSize, Graphics::g_ShadowMapSize);
+        gfxContext.ClearDepth(1.0f);
+        gfxContext.Clear(kDepthBufferBit);
+        m_ShadowMapShader.setUniform("uMatLightSpace", GetLightSpaceMatrix(i));
+        RenderScene(m_ShadowMapShader);
     }
-    profiler::stop(ProfilerTypeRender);
-    profiler::tick(ProfilerTypeRender, s_CpuTick, s_GpuTick);
+    gfxContext.SetDepthClamp(false);
+    gfxContext.SetCullFace(kCullBack);
+}
 
+void LightScattering::RenderDebugDepth(GraphicsContext& gfxContext)
+{
+    gfxContext.SetFramebuffer(Graphics::g_MainFramebuffer);
+    gfxContext.SetViewport(0, 0, Graphics::g_NativeWidth, Graphics::g_NativeHeight); 
+    gfxContext.ClearColor(glm::vec4(0, 0, 0, 0));
+    gfxContext.ClearDepth(1.0f);
+    gfxContext.Clear(kColorBufferBit | kDepthBufferBit);
+
+    m_DebugDepthShader.bind();
+    m_DebugDepthShader.setUniform("ubOrthographic", true);
+    m_DebugDepthShader.bindTexture("uTexShadowmap", Graphics::g_ShadowMap[int(m_Settings.depthIndex)], 0);
+    m_ScreenTraingle.draw();
+}
+
+void LightScattering::RenderPass(GraphicsContext& gfxContext)
+{
+    gfxContext.SetFramebuffer(Graphics::g_MainFramebuffer);
+    gfxContext.SetViewport(0, 0, Graphics::g_NativeWidth, Graphics::g_NativeHeight); 
+    gfxContext.ClearColor(glm::vec4(0, 0, 0, 0));
+    gfxContext.ClearDepth(1.0f);
+    gfxContext.Clear(kColorBufferBit | kDepthBufferBit);
+
+    glm::mat4 view = m_Camera.getViewMatrix();
+    glm::mat4 project = m_Camera.getProjectionMatrix();
+
+    m_LightShader.bind();
+    m_LightShader.setUniform("uDebugType", int32_t(m_Settings.debugType));
+    m_LightShader.setUniform("uDirectionalLight.Base.Color", m_DirectionalLight.Color);
+    m_LightShader.setUniform("uDirectionalLight.Base.AmbientIntensity", m_DirectionalLight.AmbientIntensity);
+    m_LightShader.setUniform("uDirectionalLight.Direction", glm::normalize(m_DirectionalLight.Direction));
+    m_LightShader.setUniform("uDirectionalLight.Base.DiffuseIntensity", m_DirectionalLight.DiffuseIntensity);
+    m_LightShader.setUniform("uMatView", view);
+    m_LightShader.setUniform("uMatProject", project);
+    for (uint32_t i = 0; i < m_NumCascades; i++)
+    {
+        glm::vec4 vView(0.f, 0.f, m_CascadeEnd[i + 1], 1.0f);
+        glm::vec4 vClip = project * vView;
+        m_LightShader.setUniform(util::format("uCascadeEndClipSpace[{0}]", i), vClip.z);
+        m_LightShader.setUniform(util::format("uMatLight[{0}]", i), GetLightSpaceMatrix(i));
+        m_LightShader.bindTexture(util::format("uTexShadowmap[{0}]", i), Graphics::g_ShadowMap[i], i+1);
+    }
+    m_LightShader.setUniform("uEyePositionWS", m_Camera.getPosition());
+    m_LightShader.bindTexture("uTexWood", m_TexWood, 0);
+    RenderScene(m_LightShader);
+}
+
+void LightScattering::TonemapPass(GraphicsContext& gfxContext)
+{
+    gfxContext.SetFramebuffer(nullptr);
+    gfxContext.SetViewport(0, 0, getFrameWidth(), getFrameHeight());
+    gfxContext.SetDepthTest(false);
+    m_PostProcessHDRShader.bind();
+    m_PostProcessHDRShader.bindTexture("uTexSource", Graphics::g_SceneMap, 0);
+    m_ScreenTraingle.draw();
+    gfxContext.SetDepthTest(true);
+}
+
+void LightScattering::RenderScene(const ProgramShader& shader)
+{
+    shader.setUniform("uMatModel", glm::mat4(1.f));
+    m_Ground.draw();
+
+    for (int i = 0; i < s_NumMeshes; i++)
+    {
+        shader.setUniform("uMatModel", m_MatMeshModel[i]);
+        m_Dragon.render();
+    }
+}
+
+void LightScattering::RenderScene(LightingTechnique& technique)
+{
+    technique.setMatModel(glm::mat4(1.f));
+    m_Ground.draw();
+    for (int i = 0; i < s_NumMeshes; i++)
+    {
+        technique.setMatModel(m_MatMeshModel[i]);
+        m_Dragon.render();
+    }
+}
+
+glm::vec3 LightScattering::GetSunDirection() const
+{
+    const float angle = glm::radians(m_Settings.angle);
+    glm::vec3 sunDir = glm::vec3(0.0f, glm::cos(angle), -glm::sin(angle));
+    return glm::normalize(sunDir);
+}
+
+glm::mat4 LightScattering::GetLightViewMatrix() const
+{
+    // poisition zero and direction make similar result;
+    return glm::lookAt(-5.f*m_DirectionalLight.Direction, glm::vec3(0.f), glm::vec3(0.0, 1.0, 0.0));
+    // From ogldev tutorial49
+    // "Since we are dealing with a directional light that has no origin 
+    //  we just need to rotate the world so that the light direction becomes 
+    //  aligned with the positive Z axis. The origin of light can simply be
+    //  the origin of the light space coordinate system (which means we don't 
+    //  need any translation)"
+    return glm::lookAt(glm::vec3(0.f), m_DirectionalLight.Direction, glm::vec3(0.0, 1.0, 0.0));
+}
+
+glm::mat4 LightScattering::GetLightSpaceMatrix(uint32_t i) const
+{
+    const auto& info = m_ShadowOrthoProject[i];
+    glm::mat4 lightProjection = glm::ortho(info.l, info.r, info.b, info.t, info.n, info.f);
+    return lightProjection * GetLightViewMatrix();
 }
 
 void LightScattering::keyboardCallback(uint32_t key, bool isPressed) noexcept
@@ -475,25 +529,10 @@ void LightScattering::keyboardCallback(uint32_t key, bool isPressed) noexcept
 void LightScattering::framesizeCallback(int32_t width, int32_t height) noexcept
 {
 	float aspectRatio = (float)width/height;
-	m_Camera.setProjectionParams(45.0f, aspectRatio, 0.1f, 10000.f);
+	m_Camera.setProjectionParams(m_Settings.fov, aspectRatio, 1.f, 1000.f);
 
-    GraphicsTextureDesc colorDesc;
-    colorDesc.setWidth(width);
-    colorDesc.setHeight(height);
-    colorDesc.setFormat(gli::FORMAT_RGBA16_SFLOAT_PACK16);
-    m_ScreenColorTex = m_Device->createTexture(colorDesc);
-
-    GraphicsTextureDesc depthDesc;
-    depthDesc.setWidth(width);
-    depthDesc.setHeight(height);
-    depthDesc.setFormat(gli::FORMAT_D24_UNORM_S8_UINT_PACK32);
-    auto depthTex = m_Device->createTexture(depthDesc);
-
-    GraphicsFramebufferDesc desc;  
-    desc.addComponent(GraphicsAttachmentBinding(m_ScreenColorTex, GL_COLOR_ATTACHMENT0));
-    desc.addComponent(GraphicsAttachmentBinding(depthTex, GL_DEPTH_ATTACHMENT));
-    
-    m_ColorRenderTarget = m_Device->createFramebuffer(desc);;
+    Graphics::initializeRenderingBuffers(m_Device, width, height); 
+    Graphics::resizeDisplayDependentBuffers(width, height); 
 }
 
 void LightScattering::motionCallback(float xpos, float ypos, bool bPressed) noexcept

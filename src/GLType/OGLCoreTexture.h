@@ -17,6 +17,7 @@ public:
     bool create(const GraphicsTextureDesc& desc) noexcept;
 	bool create(const std::string& filename) noexcept;
 	bool create(GLint width, GLint height, GLenum target, GraphicsFormat format, GLuint levels, const uint8_t* data, uint32_t size) noexcept;
+    bool create(GLint width, GLint height, GLint depth, GLenum target, GraphicsFormat format, GLuint levels, const uint8_t* data, uint32_t size) noexcept;
 	void destroy() noexcept;
 	void bind(GLuint unit) const;
 	void unbind(GLuint unit) const;
@@ -28,14 +29,17 @@ public:
 
     GLuint getTextureID() const noexcept;
     GLenum getFormat() const noexcept;
+    GLenum getType() const noexcept;
 
     const GraphicsTextureDesc& getGraphicsTextureDesc() const noexcept override;
+
+    // temp
+	void parameteri(GLenum pname, GLint param);
+	void parameterf(GLenum pname, GLfloat param);
 
 private:
 
     void applyParameters(const GraphicsTextureDesc& desc);
-	void parameteri(GLenum pname, GLint param);
-	void parameterf(GLenum pname, GLfloat param);
 
     bool createFromMemory(const char* data, size_t dataSize) noexcept;
     bool createFromMemoryDDS(const char* data, size_t dataSize) noexcept; // DDS, KTX
@@ -61,6 +65,7 @@ private:
 	GLuint m_TextureID;
 	GLenum m_Target;
 	GLenum m_Format;
+    GLenum m_Type;
 	GLuint m_PBO;
 	GLsizei m_PBOSize;
 	GraphicsDeviceWeakPtr m_Device;

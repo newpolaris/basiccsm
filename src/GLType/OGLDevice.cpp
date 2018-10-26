@@ -51,6 +51,9 @@ GraphicsDataPtr OGLDevice::createGraphicsData(const GraphicsDataDesc& desc) noex
 
 GraphicsTexturePtr OGLDevice::createTexture(const GraphicsTextureDesc& desc) noexcept
 {
+    assert(desc.getWrapS() != GL_CLAMP);
+    assert(desc.getWrapT() != GL_CLAMP);
+    assert(desc.getWrapR() != GL_CLAMP);
     assert(desc.getMagFilter() == GL_NEAREST || desc.getMagFilter() == GL_LINEAR);
 
     if (m_Desc.getDeviceType() == GraphicsDeviceType::GraphicsDeviceTypeOpenGLCore)
@@ -97,19 +100,31 @@ GraphicsFramebufferPtr OGLDevice::createFramebuffer(const GraphicsFramebufferDes
     return nullptr;
 }
 
-void OGLDevice::setFramebuffer(const GraphicsFramebufferPtr& framebuffer) noexcept
+void OGLDevice::bindRenderTexture(const GraphicsTexturePtr& texture, uint32_t attachment, uint32_t textarget, int32_t level) noexcept 
 {
-    assert(framebuffer);
-
     if (m_Desc.getDeviceType() == GraphicsDeviceType::GraphicsDeviceTypeOpenGLCore)
     {
-        auto fbo = framebuffer->downcast_pointer<OGLCoreFramebuffer>();
-        if (fbo) fbo->bind();
+        auto tex = texture->downcast_pointer<OGLCoreTexture>();
+        if (tex) glFramebufferTexture2D(GL_FRAMEBUFFER, attachment, textarget, tex->getTextureID(), level);
     }
     else if (m_Desc.getDeviceType() == GraphicsDeviceType::GraphicsDeviceTypeOpenGL)
     {
-        auto fbo = framebuffer->downcast_pointer<OGLFramebuffer>();
-        if (fbo) fbo->bind();
+        auto tex = texture->downcast_pointer<OGLTexture>();
+        if (tex) glFramebufferTexture2D(GL_FRAMEBUFFER, attachment, textarget, tex->getTextureID(), level);
+    }
+}
+
+void OGLDevice::generateMipmap(const GraphicsTexturePtr& texture) noexcept
+{
+    if (m_Desc.getDeviceType() == GraphicsDeviceType::GraphicsDeviceTypeOpenGLCore)
+    {
+        auto tex = texture->downcast_pointer<OGLCoreTexture>();
+        if (tex) tex->generateMipmap();
+    }
+    else if (m_Desc.getDeviceType() == GraphicsDeviceType::GraphicsDeviceTypeOpenGL)
+    {
+        auto tex = texture->downcast_pointer<OGLTexture>();
+        if (tex) tex->generateMipmap();
     }
 }
 

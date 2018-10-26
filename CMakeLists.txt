@@ -14,12 +14,6 @@ endif(MSVC)
 
 find_package(OpenGL REQUIRED)
 
-set(UseGLI TRUE)
-set(UseZlib TRUE)
-
-# Compile external dependencies 
-add_subdirectory (external)
-
 # On Visual 2005 and above, this module can set the debug working directory
 cmake_policy(SET CMP0026 OLD)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/external/rpavlik-cmake-modules-fe2273")
@@ -30,6 +24,19 @@ if(INCLUDE_DISTRIB)
 	add_subdirectory(distrib)
 endif(INCLUDE_DISTRIB)
 
+include_directories(external/zlib)
+
+set(UseGLI TRUE)
+set(UseZlib TRUE)
+set(UseAssImp TRUE)
+
+# Compile external dependencies 
+add_subdirectory (external)
+
+set(ASSIMP_INCLUDE_DIRS 
+	external/assimp/include 
+	${CMAKE_BINARY_DIR}/external/assimp/include)
+
 include_directories(
 	src/
 	external/
@@ -37,7 +44,7 @@ include_directories(
 	external/glfw-3.1.2/include/GLFW/
 	external/glm/
 	external/glew-1.13.0/include/
-	external/assimp-3.0.1270/include/
+	${ASSIMP_INCLUDE_DIRS}
 	external/bullet-2.81-rev2613/src/
 	external/gli/
 	external/zlib/
@@ -50,6 +57,7 @@ set(ALL_LIBS
 	GLEW_1130
 	imgui
 	gli
+	assimp
 	zlibstatic
 )
 
@@ -65,8 +73,14 @@ file( GLOB GLSW external/glsw/*.c external/glsw/*.h )
 add_library( glsw ${GLSW} )
 
 file( GLOB_RECURSE SRC src/* )
+file( GLOB_RECURSE SHADER_FILE shaders/*.glsl shaders/*.glsli )
 
-add_executable(${APP_TARGET} ${SRC})
+set(RESOURCE_FILES
+	${SHADER_FILE})
+
+source_group("Resource Files" FILES ${RESOURCE_FILES})
+
+add_executable(${APP_TARGET} ${SRC} ${RESOURCE_FILES})
 target_link_libraries(${APP_TARGET} glsw ${ALL_LIBS})
 
 # Xcode and Visual working directories
